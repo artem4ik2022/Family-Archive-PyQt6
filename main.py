@@ -73,6 +73,7 @@ class PersonNode(QGraphicsRectItem):
         self.data = data
         self.level = level
         self.links = []
+        self.is_manual = False
         
         self.setBrush(QBrush(QColor("lightblue")))
         self.setPen(QPen(Qt.GlobalColor.darkBlue, 2))
@@ -98,6 +99,10 @@ class PersonNode(QGraphicsRectItem):
             for edge in self.links:
                 edge.update_position()
         return super().itemChange(change, value)
+    
+    def mousePressEvent(self, event):
+        self._start_pos = self.pos()
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         dialog = PersonDialog(data=self.data)
@@ -105,6 +110,18 @@ class PersonNode(QGraphicsRectItem):
             self.data = dialog.data
             self.update_text()
         super().mouseDoubleClickEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        # Если позиция изменилась, фиксируем её и привязываем к "сетке" уровней
+        if self.pos() != self._start_pos:
+            self.is_manual = True
+            grid_y = round(self.y() / 150) * 150
+            self.setPos(self.x(), grid_y)
+            self.level = int(grid_y / 150)
+            # Принудительно обновляем линии
+            for edge in self.links:
+                edge.update_position()
 
 
 class TreeGraphicsView(QGraphicsView):
@@ -215,6 +232,8 @@ class MainWindow(QMainWindow):
         self.action_panel = QWidget()
         action_layout = QHBoxLayout(self.action_panel)
 
+        self.add_free_person_btn = QPushButton("Создать человека")
+
         self.add_parent_btn = QPushButton("Добавить родителя")
         self.add_child_btn = QPushButton("Добавить ребенка")
         self.link_parent_child_btn = QPushButton("Связать (Родитель-Ребенок)")
@@ -224,7 +243,9 @@ class MainWindow(QMainWindow):
         self.add_child_btn.clicked.connect(lambda: self.add_relative(is_parent=False))
         self.link_parent_child_btn.clicked.connect(self.link_selected_items)
         self.link_spouses_btn.clicked.connect(self.link_selected_nodes)
+        self.add_free_person_btn.clicked.connect(self.create_free_person)
 
+        action_layout.addWidget(self.add_free_person_btn)
         action_layout.addWidget(self.add_parent_btn)
         action_layout.addWidget(self.add_child_btn)
         action_layout.addWidget(self.link_parent_child_btn)
@@ -249,10 +270,25 @@ class MainWindow(QMainWindow):
             self.rearrange()
             node.setPos(0, 0)
     
+    def create_free_person(self):
+        dlg = PersonDialog()
+        if dlg.exec():
+            center = self.view.mapToScene(self.view.viewport().rect().center())
+
+            grid_y = round(center.y() / 150) * 150
+            node = PersonNode(dlg.data, level=int(grid_y / 150))
+            node.is_manual = True
+            self.scene.addItem(node)
+            node.setPos(center.x(), grid_y)
+            self.rearrange()
+
+    
     def rearrange(self):
         gen = {}
         for i in self.scene.items():
-            if isinstance(i, PersonNode): gen.setdefault(i.level, []).append(i)
+            if isinstance(i, PersonNode): 
+                if not i.is_manual:
+                    gen.setdefault(i.level, []).append(i)
         for lvl, nodes in gen.items():
             total = len(nodes) * 160 - 40
             x = -total / 2 + 60
@@ -268,6 +304,7 @@ class MainWindow(QMainWindow):
         marriage_items = [item for item in selected if isinstance(item, MarriageItem)]
         
         # Скрываем всё и показываем по условиям
+        self.add_free_person_btn.setVisible(True)
         self.add_parent_btn.setVisible(False)
         self.add_child_btn.setVisible(False)
         self.link_parent_child_btn.setVisible(False)
