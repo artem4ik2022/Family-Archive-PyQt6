@@ -122,6 +122,9 @@ class PersonNode(QGraphicsRectItem):
             # Принудительно обновляем линии
             for edge in self.links:
                 edge.update_position()
+            
+            if self.scene():
+                self.scene().views()[0].window().rearrange()
 
 
 class TreeGraphicsView(QGraphicsView):
@@ -284,19 +287,67 @@ class MainWindow(QMainWindow):
 
     
     def rearrange(self):
-        gen = {}
-        for i in self.scene.items():
-            if isinstance(i, PersonNode): 
-                if not i.is_manual:
-                    gen.setdefault(i.level, []).append(i)
-        for lvl, nodes in gen.items():
-            total = len(nodes) * 160 - 40
-            x = -total / 2 + 60
-            for n in nodes:
-                n.setPos(x, lvl * 150)
-                x += 160
-        for i in self.scene.items():
-            if hasattr(i, 'update_position'): i.update_position()
+        child_groups = {}  # {source_item: [child_node1, ...]}
+        parent_groups = {} # {child_node: [parent_node1, ...]}
+        
+        for item in self.scene.items():
+            if isinstance(item, ChildEdge):
+                # Если source - это MarriageItem или PersonNode, это связь "вниз"
+                child_groups.setdefault(item.source, []).append(item.child_node)
+                # Связь "вверх" (родители для ребенка)
+                if isinstance(item.source, PersonNode):
+                    parent_groups.setdefault(item.child_node, []).append(item.source)
+
+        spacing = 160 # Расстояние между центрами карточек
+
+        # --- Центрируем детей относительно родителей/браков ---
+        for source, children in child_groups.items():
+            # Находим X центра источника
+            if isinstance(source, MarriageItem):
+                target_x = source.get_center().x()
+            else:
+                target_x = source.sceneBoundingRect().center().x()
+            
+            # Расставляем детей симметрично (если они не перемещены вручную)
+            children.sort(key=lambda c: c.x()) # Сохраняем текущий порядок
+            n = len(children)
+            start_x = target_x - (n - 1) * spacing / 2
+            for i, child in enumerate(children):
+                if not child.is_manual:
+                    child.setPos(start_x + i * spacing, child.level * 150)
+
+        # --- Центрируем родителей относительно ребенка ---
+        for child, parents in parent_groups.items():
+            if len(parents) > 0:
+                target_x = child.sceneBoundingRect().center().x()
+                parents.sort(key=lambda p: p.x())
+                n = len(parents)
+                start_x = target_x - (n - 1) * spacing / 2
+                for i, parent in enumerate(parents):
+                    if not parent.is_manual:
+                        parent.setPos(start_x + i * spacing, parent.level * 150)
+
+        # 2. Устраняем наложения (Collision Resolution)
+        # Теперь, когда семьи сгруппированы, раздвигаем ветки, если они наползли друг на друга
+        levels = {}
+        for item in self.scene.items():
+            if isinstance(item, PersonNode):
+                levels.setdefault(item.level, []).append(item)
+
+        for lvl in sorted(levels.keys()):
+            nodes = sorted(levels[lvl], key=lambda n: n.x())
+            for i in range(len(nodes) - 1):
+                curr_node = nodes[i]
+                next_node = nodes[i+1]
+                if next_node.x() < curr_node.x() + spacing:
+                    # Двигаем не только этот узел, но и потенциально всю его ветку 
+                    # (хотя для микро-фикса достаточно просто сдвинуть узел)
+                    next_node.setPos(curr_node.x() + spacing, next_node.y())
+
+        # 3. Финальное обновление всех линий
+        for item in self.scene.items():
+            if hasattr(item, 'update_position'):
+                item.update_position()
     
     def on_selection_changed(self):
         selected = self.scene.selectedItems()
@@ -316,7 +367,7 @@ class MainWindow(QMainWindow):
             self.add_child_btn.setVisible(True)
         elif len(person_nodes) == 2:
             self.action_panel.setVisible(True)
-            self.link_parent_child_btn.setVisible(True) # Связать двух людей как род-реб
+            # self.link_parent_child_btn.setVisible(True) # Связать двух людей как род-реб
             self.link_spouses_btn.setVisible(True)
         elif len(marriage_items) == 1 and not person_nodes:
             self.action_panel.setVisible(True)
@@ -377,18 +428,37 @@ class MainWindow(QMainWindow):
         self.rearrange()
 
     def add_relative(self, is_parent):
-        sel = self.scene.selectedItems()[0]
+        selected = self.scene.selectedItems()
+        if not selected: return
+        sel = selected[0]
+        
         d = PersonDialog()
         if d.exec():
-            lvl = (sel.level - 1 if is_parent else sel.level + 1) if isinstance(sel, PersonNode) else sel.node1.level + 1
+            # Вычисляем уровень
+            if isinstance(sel, PersonNode):
+                lvl = sel.level - 1 if is_parent else sel.level + 1
+            else: # Это MarriageItem
+                lvl = sel.node1.level + 1
+                
             new_node = PersonNode(d.data, lvl)
             self.scene.addItem(new_node)
+
+            # Начальная позиция точно под/над источником
+            source_center_x = sel.sceneBoundingRect().center().x() if isinstance(sel, PersonNode) else sel.get_center().x()
+            new_node.setPos(source_center_x, lvl * 150)
+            
+            # Создаем связь
             edge = ChildEdge(sel, new_node) if not is_parent else ChildEdge(new_node, sel)
             self.scene.addItem(edge)
+            
             new_node.links.append(edge)
-            if isinstance(sel, MarriageItem): sel.child_edges.append(edge)
-            else: sel.links.append(edge)
+            if isinstance(sel, MarriageItem): 
+                sel.child_edges.append(edge)
+            else: 
+                sel.links.append(edge)
+            
             self.scene.clearSelection()
+            # rearrange расставит всех детей по центру красиво
             self.rearrange()
 
 
