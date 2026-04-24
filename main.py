@@ -1,18 +1,24 @@
 import sys
+import zipfile
+import json
+import uuid
+import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QGraphicsLineItem, QGraphicsTextItem, QPushButton, QVBoxLayout,
-                             QHBoxLayout, QWidget, QDialog, QFormLayout, QLineEdit, QTextEdit, QDateEdit, QLabel, QGraphicsPathItem)
-from PyQt6.QtCore import Qt, QRectF, QPointF
-from PyQt6.QtGui import QPen, QBrush, QColor, QFont, QPainterPath, QPainterPathStroker
+                             QHBoxLayout, QWidget, QDialog, QFormLayout, QLineEdit, QTextEdit, QDateEdit, QLabel, QGraphicsPathItem, 
+                             QWidgetAction, QMenuBar, QMenu, QMessageBox, QFileDialog, QDateTimeEdit)
+from PyQt6.QtCore import Qt, QRectF, QPointF, QDate
+from PyQt6.QtGui import QPen, QBrush, QColor, QFont, QPainterPath, QPainterPathStroker, QAction
 
 class PersonData:
-    def __init__(self, first_name='', last_name='', patronymic="", birth_date=None, death_date=None, bio=""):
+    def __init__(self, first_name='', last_name='', patronymic="", birth_date=None, death_date=None, bio="", photo_path=None):
         self.first_name = first_name
         self.last_name = last_name
         self.patronymic = patronymic
         self.birth_date = birth_date
         self.death_date = death_date
         self.bio = bio
+        self.photo_path = photo_path
 
 
 class PersonDialog(QDialog):
@@ -68,8 +74,9 @@ class EdgeItem(QGraphicsLineItem, LinkItem):
 
 
 class PersonNode(QGraphicsRectItem):
-    def __init__(self, data: PersonData, level=0):
+    def __init__(self, data: PersonData, level=0, node_id=None):
         super().__init__(-60, -30, 120, 60)
+        self.id = node_id if node_id else str(uuid.uuid4())
         self.data = data
         self.level = level
         self.links = []
@@ -148,8 +155,9 @@ class TreeGraphicsView(QGraphicsView):
 
 
 class MarriageItem(QGraphicsPathItem, LinkItem):
-    def __init__(self, node1, node2):
+    def __init__(self, node1, node2, node_id=None):
         super().__init__()
+        self.id = node_id if node_id else str(uuid.uuid4())
         self.node1 = node1
         self.node2 = node2
         self.child_edges = []
@@ -220,8 +228,27 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Семейный архив")
         self.resize(1000, 700)
 
+        self.current_file = None
+
         self.scene = QGraphicsScene()
         self.view = TreeGraphicsView(self.scene)
+
+        #! --------MENU---------
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
+
+        new_act = QAction("New", self); new_act.triggered.connect(self.new_tree)
+        open_act = QAction("Open", self); open_act.triggered.connect(self.open_tree)
+        save_act = QAction("Save", self); save_act.triggered.connect(self.save_tree)
+        save_as_act = QAction("Save As...", self); save_as_act.triggered.connect(self.save_tree_as)
+        
+        file_menu.addAction(new_act)
+        file_menu.addAction(open_act)
+        file_menu.addSeparator()
+        file_menu.addAction(save_act)
+        file_menu.addAction(save_as_act)
+
+        #! --------END MENU-----
 
         self.centralWidget = QWidget()
         self.setCentralWidget(self.centralWidget)
@@ -261,6 +288,108 @@ class MainWindow(QMainWindow):
         self.view.setVisible(False)
 
         self.scene.selectionChanged.connect(self.on_selection_changed)
+
+    def new_tree(self):
+        if self.scene.items():
+            res = QMessageBox.question(self, "Новый файл", "Очистить дерево? Несохраненные данные будут потеряны.")
+            if res != QMessageBox.StandardButton.Yes: return
+        self.scene.clear()
+        self.current_file = None
+        self.start_btn.show()
+        self.view.hide()
+        self.action_panel.hide()
+
+    def save_tree(self):
+        if not self.current_file:
+            self.save_tree_as()
+        else:
+            self.perform_save(self.current_file)
+
+    def save_tree_as(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить дерево", "", "Family Tree (*.ftree)")
+        if path:
+            if not path.endswith('.ftree'): path += '.ftree'
+            self.current_file = path
+            self.perform_save(path)
+
+    def perform_save(self, path):
+        data = {"people": [], "marriages": [], "child_links": []}
+        
+        items = self.scene.items()
+        people = [i for i in items if isinstance(i, PersonNode)]
+        marriages = [i for i in items if isinstance(i, MarriageItem)]
+        
+        for p in people:
+            data["people"].append({
+                "id": p.id, "x": p.x(), "y": p.y(), "level": p.level, "is_manual": p.is_manual,
+                "first_name": p.data.first_name, "last_name": p.data.last_name,
+                "patronymic": p.data.patronymic, "bio": p.data.bio
+            })
+            
+        for m in marriages:
+            data["marriages"].append({
+                "id": m.id, "node1_id": m.node1.id, "node2_id": m.node2.id
+            })
+
+        for i in items:
+            if isinstance(i, ChildEdge):
+                source_id = i.source.id
+                data["child_links"].append({
+                    "source_id": source_id, "child_id": i.child_node.id
+                })
+
+        with zipfile.ZipFile(path, 'w') as zf:
+            zf.writestr('tree.json', json.dumps(data, ensure_ascii=False, indent=4))
+            # Здесь в будущем: zf.write(photo_path, 'photos/...')
+        self.statusBar().showMessage(f"Сохранено: {path}", 3000)
+
+    def open_tree(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Открыть дерево", "", "Family Tree (*.ftree)")
+        if not path: return
+        
+        try:
+            with zipfile.ZipFile(path, 'r') as zf:
+                content = zf.read('tree.json')
+                data = json.loads(content)
+                
+            self.scene.clear()
+            self.current_file = path
+            nodes_map = {}
+            marriages_map = {}
+
+            # 1. Создаем людей
+            for p_data in data["people"]:
+                d = PersonData(p_data["first_name"], p_data["last_name"], p_data["patronymic"], bio=p_data["bio"])
+                node = PersonNode(d, p_data["level"], p_data["id"])
+                node.setPos(p_data["x"], p_data["y"])
+                node.is_manual = p_data["is_manual"]
+                self.scene.addItem(node)
+                nodes_map[node.id] = node
+
+            # 2. Создаем браки
+            for m_data in data["marriages"]:
+                n1, n2 = nodes_map[m_data["node1_id"]], nodes_map[m_data["node2_id"]]
+                m_item = MarriageItem(n1, n2, m_data["id"])
+                self.scene.addItem(m_item)
+                n1.links.append(m_item); n2.links.append(m_item)
+                marriages_map[m_item.id] = m_item
+
+            # 3. Создаем связи с детьми
+            for l_data in data["child_links"]:
+                source = nodes_map.get(l_data["source_id"]) or marriages_map.get(l_data["source_id"])
+                child = nodes_map[l_data["child_id"]]
+                edge = ChildEdge(source, child)
+                self.scene.addItem(edge)
+                child.links.append(edge)
+                if isinstance(source, MarriageItem): source.child_edges.append(edge)
+                else: source.links.append(edge)
+
+            self.start_btn.hide()
+            self.view.show()
+            self.rearrange()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл: {e}")
 
     def create_root_person(self):
         dialog = PersonDialog()
