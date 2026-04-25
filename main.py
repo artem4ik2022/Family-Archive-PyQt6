@@ -2,23 +2,25 @@ import sys
 import zipfile
 import json
 import uuid
+import tempfile
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
                              QGraphicsRectItem, QGraphicsLineItem, QGraphicsTextItem, QPushButton, QVBoxLayout,
                              QHBoxLayout, QWidget, QDialog, QFormLayout, QLineEdit, QTextEdit, QDateEdit, QLabel, QGraphicsPathItem, 
-                             QWidgetAction, QMenuBar, QMenu, QMessageBox, QFileDialog, QDateTimeEdit)
+                             QWidgetAction, QMenuBar, QMenu, QMessageBox, QFileDialog, QDateTimeEdit, QGridLayout, QScrollArea)
 from PyQt6.QtCore import Qt, QRectF, QPointF, QDate
-from PyQt6.QtGui import QPen, QBrush, QColor, QFont, QPainterPath, QPainterPathStroker, QAction
+from PyQt6.QtGui import (QPen, QBrush, QColor, QFont, QPainterPath, QPainterPathStroker, QAction, QPixmap, QImage)
+from PyQt6 import uic
 
 class PersonData:
-    def __init__(self, first_name='', last_name='', patronymic="", birth_date=None, death_date=None, bio="", photo_path=None):
+    def __init__(self, first_name='', last_name='', patronymic="", birth_date=None, death_date=None, bio="", photos=None):
         self.first_name = first_name
         self.last_name = last_name
         self.patronymic = patronymic
         self.birth_date = birth_date
         self.death_date = death_date
         self.bio = bio
-        self.photo_path = photo_path
+        self.photos = photos if photos is not None else []
 
 
 class PersonDialog(QDialog):
@@ -40,12 +42,18 @@ class PersonDialog(QDialog):
         layout.addRow("Отчество:", self.patronymic_input)
         layout.addRow("Биография:", self.bio_input)
 
-        self.photo_btn = QPushButton("Выбрать фото (в разработке)")
-        layout.addRow("Фотография:", self.photo_btn)
+        photo_btn = QPushButton("Фотоальбом")
+        photo_btn.clicked.connect(self.openPhotoAlbum)
+        layout.addWidget(photo_btn)
 
         save_btn = QPushButton("Сохранить")
         save_btn.clicked.connect(self.save_and_close)
         layout.addRow(save_btn)
+
+    def openPhotoAlbum(self):
+        dlg = PhotoDialog(parent=self, data=self.data)
+        dlg.exec()
+
     
     def save_and_close(self):
         self.data.last_name = self.last_name_input.text()
@@ -53,6 +61,132 @@ class PersonDialog(QDialog):
         self.data.patronymic = self.patronymic_input.text()
         self.data.bio = self.bio_input.toPlainText()
         self.accept()
+
+
+class PhotoWidget(QWidget):
+    def __init__(self, photo, name):
+        super().__init__()
+
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        self.setFixedSize(300, 400)
+
+        img_lbl = QLabel()
+        pixmap = QPixmap()
+        pixmap.load(photo)
+        pixmap = pixmap.scaled(300, 500, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        img_lbl.setPixmap(pixmap)
+
+        name_lbl = QLabel(name, self)
+        name_lbl.setMaximumHeight(50)
+        name_lbl.setWordWrap(True)
+
+        layout.addWidget(img_lbl)
+        layout.addWidget(name_lbl)
+        
+        self.setStyleSheet("""
+                                border: 3px solid rgb(0, 0, 0);
+                                border-radius: 10px;
+                                padding: 5px;""")
+
+
+class addPhotoDialog(QDialog):
+    def __init__(self, parent = None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить фото")
+        self.filepath = None
+
+        layout = QVBoxLayout(self)
+
+        self.img_lbl = QLabel()
+        self.img_lbl.setFixedSize(300, 300)
+        self.img_lbl.setStyleSheet("border: 1px dashed gray;")
+
+        btn_select = QPushButton("Выбрать файл")
+        btn_select.clicked.connect(self.select_file)
+
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Название фото")
+
+        btn_save = QPushButton("Добавить")
+        btn_save.clicked.connect(self.accept)
+
+        layout.addWidget(self.img_lbl)
+        layout.addWidget(btn_select)
+        layout.addWidget(self.name_input)
+        layout.addWidget(btn_save)
+    
+    def select_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите фото", "", "Image (*.png *.jpg *.jpeg *.bmp)")
+        if path:
+            self.filepath = path
+            pixmap = QPixmap(path)
+            pixmap = pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.img_lbl.setPixmap(pixmap)
+    
+    def accept(self):
+        if not self.filepath:
+            QMessageBox.warning(self, "Ошибка", "Сначала выберите фото!")
+            return
+        super().accept()
+
+
+class PhotoDialog(QDialog):
+    def __init__(self, parent = None, data=None):
+        super().__init__(parent)
+        self.setMinimumWidth(937)
+        self.setMinimumHeight(639)
+        self.data = data
+
+        uic.loadUi("UIs/PhotoDialog.ui", self)
+
+        self.setup_scroll_area()
+
+        self.add_btn.clicked.connect(self.add_new_photo)
+
+        self.refresh_grid()
+    
+    def setup_scroll_area(self):
+        # 1. Находим старую сетку и запоминаем её размеры/координаты
+        old_geom = self.gridLayoutWidget.geometry()
+        self.gridLayoutWidget.hide() # Прячем старый виджет
+
+        # 2. Создаем ScrollArea точно на месте старой сетки
+        self.scroll = QScrollArea(self)
+        self.scroll.setGeometry(old_geom) # Те же координаты и размер
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("background-color: transparent; border: none;")
+
+        # 3. Создаем внутренний контейнер для фото
+        self.scroll_content = QWidget()
+        self.scroll_layout = QGridLayout(self.scroll_content)
+        # Прижимаем элементы к верху и левому краю
+        self.scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.scroll_layout.setSpacing(15) # Отступы между карточками
+        
+        self.scroll.setWidget(self.scroll_content)
+
+    def add_new_photo(self):
+        dlg = addPhotoDialog(self)
+        if dlg.exec():
+            self.data.photos.append({
+                "path": dlg.filepath, 
+                "name": dlg.name_input.text()
+            })
+            self.refresh_grid()
+
+    def refresh_grid(self):
+        while self.scroll_layout.count():
+            child = self.scroll_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        
+        # Рисуем фото из self.data.photos
+        columns = 3
+        for i, photo in enumerate(self.data.photos):
+            widget = PhotoWidget(photo["path"], photo["name"])
+            self.scroll_layout.addWidget(widget, i // columns, i % columns)
 
 class LinkItem:
     def update_position(self):
@@ -319,28 +453,32 @@ class MainWindow(QMainWindow):
         people = [i for i in items if isinstance(i, PersonNode)]
         marriages = [i for i in items if isinstance(i, MarriageItem)]
         
-        for p in people:
-            data["people"].append({
-                "id": p.id, "x": p.x(), "y": p.y(), "level": p.level, "is_manual": p.is_manual,
-                "first_name": p.data.first_name, "last_name": p.data.last_name,
-                "patronymic": p.data.patronymic, "bio": p.data.bio
-            })
-            
-        for m in marriages:
-            data["marriages"].append({
-                "id": m.id, "node1_id": m.node1.id, "node2_id": m.node2.id
-            })
-
-        for i in items:
-            if isinstance(i, ChildEdge):
-                source_id = i.source.id
-                data["child_links"].append({
-                    "source_id": source_id, "child_id": i.child_node.id
-                })
-
         with zipfile.ZipFile(path, 'w') as zf:
+            for p in people:
+                saved_photos = []
+                for photo in p.data.photos:
+                    if os.path.exists(photo['path']):
+                        _, ext = os.path.splitext(photo['path'])
+                        zip_img_path = f"photos/{uuid.uuid4()}{ext}"
+                        zf.write(photo['path'], zip_img_path)
+                        saved_photos.append({"zip_path": zip_img_path, "name": photo['name']})
+                
+                data["people"].append({
+                    "id": p.id, "x": p.x(), "y": p.y(), "level": p.level, "is_manual": p.is_manual,
+                    "first_name": p.data.first_name, "last_name": p.data.last_name,
+                    "patronymic": p.data.patronymic, "bio": p.data.bio,
+                    "photos": saved_photos
+                })
+            
+            for m in marriages:
+                data["marriages"].append({"id": m.id, "node1_id": m.node1.id, "node2_id": m.node2.id})
+
+            for i in items:
+                if isinstance(i, ChildEdge):
+                    data["child_links"].append({"source_id": i.source.id, "child_id": i.child_node.id})
+
             zf.writestr('tree.json', json.dumps(data, ensure_ascii=False, indent=4))
-            # Здесь в будущем: zf.write(photo_path, 'photos/...')
+            
         self.statusBar().showMessage(f"Сохранено: {path}", 3000)
 
     def open_tree(self):
@@ -348,7 +486,11 @@ class MainWindow(QMainWindow):
         if not path: return
         
         try:
+            # Создаем временную директорию для распаковки картинок
+            temp_dir = tempfile.mkdtemp()
+            
             with zipfile.ZipFile(path, 'r') as zf:
+                zf.extractall(temp_dir)
                 content = zf.read('tree.json')
                 data = json.loads(content)
                 
@@ -359,10 +501,23 @@ class MainWindow(QMainWindow):
 
             # 1. Создаем людей
             for p_data in data["people"]:
-                d = PersonData(p_data["first_name"], p_data["last_name"], p_data["patronymic"], bio=p_data["bio"])
-                node = PersonNode(d, p_data["level"], p_data["id"])
-                node.setPos(p_data["x"], p_data["y"])
-                node.is_manual = p_data["is_manual"]
+                # Восстанавливаем фото из временной папки
+                photos = []
+                for ph in p_data.get("photos", []):
+                    local_path = os.path.join(temp_dir, ph["zip_path"])
+                    photos.append({"path": local_path, "name": ph["name"]})
+
+                d = PersonData(
+                    first_name=p_data.get("first_name", ""), 
+                    last_name=p_data.get("last_name", ""), 
+                    patronymic=p_data.get("patronymic", ""), 
+                    bio=p_data.get("bio", ""),
+                    photos=photos
+                )
+                
+                node = PersonNode(d, p_data.get("level", 0), p_data.get("id"))
+                node.setPos(p_data.get("x", 0), p_data.get("y", 0))
+                node.is_manual = p_data.get("is_manual", False)
                 self.scene.addItem(node)
                 nodes_map[node.id] = node
 
