@@ -8,8 +8,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphics
                              QGraphicsRectItem, QGraphicsLineItem, QGraphicsTextItem, QPushButton, QVBoxLayout,
                              QHBoxLayout, QWidget, QDialog, QFormLayout, QLineEdit, QTextEdit, QDateEdit, QLabel, QGraphicsPathItem, 
                              QWidgetAction, QMenuBar, QMenu, QMessageBox, QFileDialog, QDateTimeEdit, QGridLayout, QScrollArea)
-from PyQt6.QtCore import Qt, QRectF, QPointF, QDate
-from PyQt6.QtGui import (QPen, QBrush, QColor, QFont, QPainterPath, QPainterPathStroker, QAction, QPixmap, QImage)
+from PyQt6.QtCore import Qt, QRectF, QPointF, QDate, QUrl
+from PyQt6.QtGui import (QPen, QBrush, QColor, QFont, QPainterPath, QPainterPathStroker, QAction, QPixmap, QImage, QDesktopServices)
 from PyQt6 import uic
 
 class PersonData:
@@ -63,9 +63,75 @@ class PersonDialog(QDialog):
         self.accept()
 
 
+class FullPhotoDialog(QDialog):
+    def __init__(self, photo_data, parent=None):
+        super().__init__(parent)
+        self.photo_data = photo_data
+        self.setWindowTitle(f"Просмотр {photo_data['name']}")
+        self.setMinimumSize(600, 700)
+        
+        layout = QVBoxLayout(self)
+
+        # 1. Фото в полном размере (масштабируется под окно)
+        self.img_lbl = QLabel()
+        self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pixmap = QPixmap(photo_data["path"])
+        self.update_image()
+        layout.addWidget(self.img_lbl, stretch=1)
+
+        # 2. Поле для изменения имени
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Название:"))
+        self.name_input = QLineEdit(photo_data["name"])
+        name_layout.addWidget(self.name_input)
+        layout.addLayout(name_layout)
+
+        # 3. Кнопки управления
+        btns_layout = QHBoxLayout()
+        
+        open_btn = QPushButton("Открыть в системе")
+        open_btn.clicked.connect(self.open_in_os)
+        
+        save_btn = QPushButton("Сохранить")
+        save_btn.clicked.connect(self.save_changes)
+        
+        delete_btn = QPushButton("Удалить фото")
+        delete_btn.setStyleSheet("background-color: #ff4444; color: white;")
+        delete_btn.clicked.connect(self.delete_photo)
+        
+        btns_layout.addWidget(open_btn)
+        btns_layout.addWidget(save_btn)
+        btns_layout.addWidget(delete_btn)
+        layout.addLayout(btns_layout)
+
+    def update_image(self):
+        if not self.pixmap.isNull():
+            # Ограничиваем размер фото, чтобы оно не раздувало окно до бесконечности
+            scaled = self.pixmap.scaled(800, 600, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.img_lbl.setPixmap(scaled)
+
+    def open_in_os(self):
+        # Открывает фото в стандартной программе Windows/macOS/Linux
+        file_url = QUrl.fromLocalFile(self.photo_data["path"])
+        QDesktopServices.openUrl(file_url)
+
+    def save_changes(self):
+        self.photo_data["name"] = self.name_input.text()
+        self.accept()
+
+    def delete_photo(self):
+        reply = QMessageBox.question(self, "Удаление", "Удалить это фото из альбома?", 
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.done(10) # Специальный код для удаления
+
+
 class PhotoWidget(QWidget):
-    def __init__(self, photo, name):
+    def __init__(self, photo_data, parent_dialog):
         super().__init__()
+
+        self.photo_data = photo_data
+        self.parent_dialog = parent_dialog
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -74,11 +140,11 @@ class PhotoWidget(QWidget):
 
         img_lbl = QLabel()
         pixmap = QPixmap()
-        pixmap.load(photo)
+        pixmap.load(self.photo_data['path'])
         pixmap = pixmap.scaled(300, 500, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         img_lbl.setPixmap(pixmap)
 
-        name_lbl = QLabel(name, self)
+        name_lbl = QLabel(self.photo_data['name'], self)
         name_lbl.setMaximumHeight(50)
         name_lbl.setWordWrap(True)
 
@@ -89,6 +155,10 @@ class PhotoWidget(QWidget):
                                 border: 3px solid rgb(0, 0, 0);
                                 border-radius: 10px;
                                 padding: 5px;""")
+    
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_dialog.open_full_photo(self.photo_data)
 
 
 class addPhotoDialog(QDialog):
@@ -147,6 +217,16 @@ class PhotoDialog(QDialog):
 
         self.refresh_grid()
     
+    def open_full_photo(self, photo_data):
+        dlg = FullPhotoDialog(photo_data, self)
+        result = dlg.exec()
+        
+        if result == 10: 
+            self.data.photos.remove(photo_data)
+            self.refresh_grid()
+        elif result == QDialog.DialogCode.Accepted:
+            self.refresh_grid()
+    
     def setup_scroll_area(self):
         # 1. Находим старую сетку и запоминаем её размеры/координаты
         old_geom = self.gridLayoutWidget.geometry()
@@ -185,7 +265,7 @@ class PhotoDialog(QDialog):
         # Рисуем фото из self.data.photos
         columns = 3
         for i, photo in enumerate(self.data.photos):
-            widget = PhotoWidget(photo["path"], photo["name"])
+            widget = PhotoWidget(photo, self)
             self.scroll_layout.addWidget(widget, i // columns, i % columns)
 
 class LinkItem:
